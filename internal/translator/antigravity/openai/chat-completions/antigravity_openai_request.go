@@ -162,6 +162,19 @@ func ConvertOpenAIRequestToAntigravity(modelName string, inputRawJSON []byte, _ 
 						}
 					}
 				}
+				// Also check Claude-format: content array with type: "tool_use"
+				content := m.Get("content")
+				if content.IsArray() {
+					for _, item := range content.Array() {
+						if item.Get("type").String() == "tool_use" {
+							id := item.Get("id").String()
+							name := item.Get("name").String()
+							if id != "" && name != "" {
+								tcID2Name[id] = name
+							}
+						}
+					}
+				}
 			}
 		}
 
@@ -193,12 +206,20 @@ func ConvertOpenAIRequestToAntigravity(modelName string, inputRawJSON []byte, _ 
 					out, _ = sjson.SetBytes(out, "request.systemInstruction.role", "user")
 					out, _ = sjson.SetBytes(out, "request.systemInstruction.parts.0.text", content.Get("text").String())
 				} else if content.IsArray() {
-					contents := content.Array()
-					if len(contents) > 0 {
-						out, _ = sjson.SetBytes(out, "request.systemInstruction.role", "user")
-						for j := 0; j < len(contents); j++ {
-							out, _ = sjson.SetBytes(out, fmt.Sprintf("request.systemInstruction.parts.%d.text", j), contents[j].Get("text").String())
+					// Handle array content (Cursor sends tool docs as array of text parts)
+					out, _ = sjson.SetBytes(out, "request.systemInstruction.role", "user")
+					var combinedText strings.Builder
+					content.ForEach(func(_, part gjson.Result) bool {
+						if part.Get("type").String() == "text" {
+							if combinedText.Len() > 0 {
+								combinedText.WriteString("\n\n")
+							}
+							combinedText.WriteString(part.Get("text").String())
 						}
+						return true
+					})
+					if combinedText.Len() > 0 {
+						out, _ = sjson.SetBytes(out, "request.systemInstruction.parts.0.text", combinedText.String())
 					}
 				}
 			} else if role == "user" || ((role == "system" || role == "developer") && len(arr) == 1) {
@@ -241,6 +262,26 @@ func ConvertOpenAIRequestToAntigravity(modelName string, inputRawJSON []byte, _ 
 							} else {
 								log.Warnf("Unknown file name extension '%s' in user message, skip", ext)
 							}
+						case "tool_result":
+							// Claude-format tool result: {type: "tool_result", tool_use_id: "...", content: "..."}
+							toolUseID := item.Get("tool_use_id").String()
+							resultContent := item.Get("content")
+							if toolUseID != "" {
+								funcName := tcID2Name[toolUseID]
+								if funcName == "" {
+									funcName = "unknown"
+								}
+								node, _ = sjson.SetBytes(node, "parts."+itoa(p)+".functionResponse.id", toolUseID)
+								node, _ = sjson.SetBytes(node, "parts."+itoa(p)+".functionResponse.name", funcName)
+								if resultContent.Type == gjson.String {
+									node, _ = sjson.SetBytes(node, "parts."+itoa(p)+".functionResponse.response.result", resultContent.String())
+								} else if resultContent.Type == gjson.JSON {
+									node, _ = sjson.SetRawBytes(node, "parts."+itoa(p)+".functionResponse.response.result", []byte(resultContent.Raw))
+								} else {
+									node, _ = sjson.SetBytes(node, "parts."+itoa(p)+".functionResponse.response.result", "{}")
+								}
+								p++
+							}
 						}
 					}
 				}
@@ -252,11 +293,32 @@ func ConvertOpenAIRequestToAntigravity(modelName string, inputRawJSON []byte, _ 
 					node, _ = sjson.SetBytes(node, "parts.-1.text", content.String())
 					p++
 				} else if content.IsArray() {
-					// Assistant multimodal content (e.g. text + image) -> single model content with parts
+					// Handle assistant content array (text, tool_use, and image_url)
 					for _, item := range content.Array() {
-						switch item.Get("type").String() {
+						itemType := item.Get("type").String()
+						switch itemType {
 						case "text":
-							p++
+							textContent := item.Get("text").String()
+							if textContent != "" {
+								node, _ = sjson.SetBytes(node, "parts."+itoa(p)+".text", textContent)
+								p++
+							}
+						case "tool_use":
+							// Convert Claude tool_use to functionCall
+							tuID := item.Get("id").String()
+							tuName := item.Get("name").String()
+							tuInput := item.Get("input")
+							if tuID != "" && tuName != "" {
+								node, _ = sjson.SetBytes(node, "parts."+itoa(p)+".functionCall.id", tuID)
+								node, _ = sjson.SetBytes(node, "parts."+itoa(p)+".functionCall.name", tuName)
+								if tuInput.Exists() {
+									node, _ = sjson.SetRawBytes(node, "parts."+itoa(p)+".functionCall.args", []byte(tuInput.Raw))
+								} else {
+									node, _ = sjson.SetRawBytes(node, "parts."+itoa(p)+".functionCall.args", []byte("{}"))
+								}
+								node, _ = sjson.SetBytes(node, "parts."+itoa(p)+".thoughtSignature", geminiCLIFunctionThoughtSignature)
+								p++
+							}
 						case "image_url":
 							// If the assistant returned an inline data URL, preserve it for history fidelity.
 							imageURL := item.Get("image_url.url").String()
@@ -389,6 +451,31 @@ func ConvertOpenAIRequestToAntigravity(modelName string, inputRawJSON []byte, _ 
 					hasFunction = true
 					hasTool = true
 				}
+			} else if t.Get("name").Exists() && (t.Get("input_schema").Exists() || t.Get("type").String() == "custom") {
+				// Cursor-style tool format: {"name": "...", "input_schema": {...}} (no type:function wrapper)
+				// Also handles Claude API custom tools with type: "custom"
+				fnRaw := `{"name":"","parametersJsonSchema":{}}`
+				fnRaw, _ = sjson.Set(fnRaw, "name", t.Get("name").String())
+				if desc := t.Get("description"); desc.Exists() {
+					fnRaw, _ = sjson.Set(fnRaw, "description", desc.String())
+				}
+
+				// Handle input_schema -> parametersJsonSchema
+				if schema := t.Get("input_schema"); schema.Exists() {
+					fnRaw, _ = sjson.SetRaw(fnRaw, "parametersJsonSchema", schema.Raw)
+				}
+
+				if !hasFunction {
+					toolNode, _ = sjson.SetRawBytes(toolNode, "functionDeclarations", []byte("[]"))
+				}
+				tmp, errSet := sjson.SetRawBytes(toolNode, "functionDeclarations.-1", []byte(fnRaw))
+				if errSet != nil {
+					log.Warnf("Failed to append Cursor-style tool declaration for '%s': %v", t.Get("name").String(), errSet)
+					continue
+				}
+				toolNode = tmp
+				hasFunction = true
+				hasTool = true
 			}
 			if gs := t.Get("google_search"); gs.Exists() {
 				var errSet error
