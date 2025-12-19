@@ -8,6 +8,7 @@ import (
 // ApplyClaudeThinkingConfig applies thinking configuration to a Claude API request payload.
 // It sets the thinking.type to "enabled" and thinking.budget_tokens to the specified budget.
 // If budget is nil or the payload already has thinking config, it returns the payload unchanged.
+// Claude API requires temperature=1.0 when thinking is enabled, so we set that as well.
 func ApplyClaudeThinkingConfig(body []byte, budget *int) []byte {
 	if budget == nil {
 		return body
@@ -21,6 +22,8 @@ func ApplyClaudeThinkingConfig(body []byte, budget *int) []byte {
 	updated := body
 	updated, _ = sjson.SetBytes(updated, "thinking.type", "enabled")
 	updated, _ = sjson.SetBytes(updated, "thinking.budget_tokens", *budget)
+	// Claude API requires temperature=1.0 when thinking is enabled
+	updated, _ = sjson.SetBytes(updated, "temperature", 1.0)
 	return updated
 }
 
