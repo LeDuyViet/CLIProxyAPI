@@ -120,6 +120,25 @@ func (e *ClaudeExecutor) Execute(ctx context.Context, auth *cliproxyauth.Auth, r
 	// Ensure max_tokens > thinking.budget_tokens when thinking is enabled
 	body = ensureMaxTokensForThinking(model, body)
 
+	// Log thinking state before potential disable
+	thinkingBefore := gjson.GetBytes(body, "thinking.type").String()
+	if thinkingBefore == "enabled" {
+		fmt.Printf("[CLAUDE-EXECUTOR] THINKING: ENABLED (budget=%d) for model=%s\n",
+			gjson.GetBytes(body, "thinking.budget_tokens").Int(), req.Model)
+	} else {
+		fmt.Printf("[CLAUDE-EXECUTOR] THINKING: NOT ENABLED for model=%s\n", req.Model)
+	}
+
+	// Disable thinking if in a tool loop without cached thinking blocks
+	// (Claude requires thinking blocks before tool_use in assistant messages)
+	body = disableThinkingInToolLoop(body)
+
+	// Log if thinking was disabled by tool loop detection
+	thinkingAfter := gjson.GetBytes(body, "thinking.type").String()
+	if thinkingBefore == "enabled" && thinkingAfter != "enabled" {
+		fmt.Printf("[CLAUDE-EXECUTOR] THINKING: DISABLED (tool loop detected - missing thinking blocks)\n")
+	}
+
 	// Extract betas from body and convert to header
 	var extraBetas []string
 	extraBetas, body = extractAndRemoveBetas(body)
@@ -248,6 +267,25 @@ func (e *ClaudeExecutor) ExecuteStream(ctx context.Context, auth *cliproxyauth.A
 
 	// Ensure max_tokens > thinking.budget_tokens when thinking is enabled
 	body = ensureMaxTokensForThinking(model, body)
+
+	// Log thinking state before potential disable
+	thinkingBefore := gjson.GetBytes(body, "thinking.type").String()
+	if thinkingBefore == "enabled" {
+		fmt.Printf("[CLAUDE-EXECUTOR-STREAM] THINKING: ENABLED (budget=%d) for model=%s\n",
+			gjson.GetBytes(body, "thinking.budget_tokens").Int(), req.Model)
+	} else {
+		fmt.Printf("[CLAUDE-EXECUTOR-STREAM] THINKING: NOT ENABLED for model=%s\n", req.Model)
+	}
+
+	// Disable thinking if in a tool loop without cached thinking blocks
+	// (Claude requires thinking blocks before tool_use in assistant messages)
+	body = disableThinkingInToolLoop(body)
+
+	// Log if thinking was disabled by tool loop detection
+	thinkingAfter := gjson.GetBytes(body, "thinking.type").String()
+	if thinkingBefore == "enabled" && thinkingAfter != "enabled" {
+		fmt.Printf("[CLAUDE-EXECUTOR-STREAM] THINKING: DISABLED (tool loop detected - missing thinking blocks)\n")
+	}
 
 	// Extract betas from body and convert to header
 	var extraBetas []string
@@ -955,4 +993,97 @@ func stripClaudeToolPrefixFromStreamLine(line []byte, prefix string) []byte {
 		return append([]byte("data: "), updated...)
 	}
 	return updated
+}
+
+// disableThinkingInToolLoop detects if we're in a "tool loop" (last user message contains tool_result)
+// and the assistant messages don't have thinking blocks. In this case, Claude API requires thinking
+// blocks before tool_use content, but OpenAI-format clients like Cursor don't send them.
+// The workaround is to temporarily disable thinking to allow the tool loop to complete.
+// This matches cursor-claude-connector's fallback approach when cached thinking blocks are unavailable.
+func disableThinkingInToolLoop(payload []byte) []byte {
+	// Check if thinking is enabled
+	thinkingType := gjson.GetBytes(payload, "thinking.type").String()
+	if thinkingType != "enabled" {
+		return payload
+	}
+
+	// Check if we're in a tool loop (last user message contains tool_result)
+	messages := gjson.GetBytes(payload, "messages")
+	if !messages.IsArray() {
+		return payload
+	}
+
+	// Find the last user message
+	var lastUserContent gjson.Result
+	messages.ForEach(func(_, msg gjson.Result) bool {
+		if msg.Get("role").String() == "user" {
+			lastUserContent = msg.Get("content")
+		}
+		return true
+	})
+
+	if !lastUserContent.IsArray() {
+		return payload
+	}
+
+	// Check if last user message contains tool_result
+	isInsideToolLoop := false
+	lastUserContent.ForEach(func(_, block gjson.Result) bool {
+		if block.Get("type").String() == "tool_result" {
+			isInsideToolLoop = true
+			return false // stop iteration
+		}
+		return true
+	})
+
+	if !isInsideToolLoop {
+		return payload
+	}
+
+	// We're in a tool loop - check if assistant messages have thinking blocks
+	// If any assistant message with tool_use lacks a thinking block, disable thinking
+	hasAssistantWithToolUse := false
+	allHaveThinking := true
+
+	messages.ForEach(func(_, msg gjson.Result) bool {
+		if msg.Get("role").String() != "assistant" {
+			return true
+		}
+
+		content := msg.Get("content")
+		if !content.IsArray() {
+			return true
+		}
+
+		hasToolUse := false
+		hasThinking := false
+
+		content.ForEach(func(_, block gjson.Result) bool {
+			blockType := block.Get("type").String()
+			if blockType == "tool_use" {
+				hasToolUse = true
+			}
+			if blockType == "thinking" || blockType == "redacted_thinking" {
+				hasThinking = true
+			}
+			return true
+		})
+
+		if hasToolUse {
+			hasAssistantWithToolUse = true
+			if !hasThinking {
+				allHaveThinking = false
+				return false // stop iteration
+			}
+		}
+		return true
+	})
+
+	// If we found assistant messages with tool_use but without thinking blocks,
+	// disable thinking to avoid the Claude API error
+	if hasAssistantWithToolUse && !allHaveThinking {
+		payload, _ = sjson.DeleteBytes(payload, "thinking")
+	}
+
+	return payload
 }
