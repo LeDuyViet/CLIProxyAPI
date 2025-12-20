@@ -1,6 +1,7 @@
 package util
 
 import (
+	"fmt"
 	"regexp"
 	"strings"
 
@@ -263,9 +264,11 @@ func ThinkingBudgetToGemini3Level(model string, budget int) (string, bool) {
 //
 // We should not override these API defaults; let users explicitly configure if needed.
 var modelsWithDefaultThinking = map[string]bool{
-	// "gemini-3-pro-preview":       true,
-	// "gemini-3-pro-image-preview": true,
-	// "gemini-3-flash-preview":     true,
+	"gemini-3-pro-preview":              true,
+	"gemini-3-pro-image-preview":        true,
+	"gemini-3-flash-preview":            true,
+	"gemini-claude-opus-4-5-thinking":   true,
+	"gemini-claude-sonnet-4-5-thinking": true,
 }
 
 // ModelHasDefaultThinking returns true if the model should have thinking enabled by default.
@@ -380,6 +383,7 @@ func ApplyDefaultThinkingIfNeededCLI(model string, metadata map[string]any, body
 		return body
 	}
 	if gjson.GetBytes(body, "request.generationConfig.thinkingConfig").Exists() {
+		fmt.Printf("[APPLY-DEFAULT-THINKING] model=%s already has thinkingConfig, skipping\n", model)
 		return body
 	}
 	// Gemini 3 models use thinkingLevel instead of thinkingBudget
@@ -387,11 +391,13 @@ func ApplyDefaultThinkingIfNeededCLI(model string, metadata map[string]any, body
 		// Don't set a default - let the API use its dynamic default ("high")
 		// Only set includeThoughts
 		updated, _ := sjson.SetBytes(body, "request.generationConfig.thinkingConfig.includeThoughts", true)
+		fmt.Printf("[APPLY-DEFAULT-THINKING] model=%s (Gemini3) set includeThoughts=true\n", model)
 		return updated
 	}
 	// Gemini 2.5 and other models use thinkingBudget
 	updated, _ := sjson.SetBytes(body, "request.generationConfig.thinkingConfig.thinkingBudget", -1)
 	updated, _ = sjson.SetBytes(updated, "request.generationConfig.thinkingConfig.include_thoughts", true)
+	fmt.Printf("[APPLY-DEFAULT-THINKING] model=%s set thinkingBudget=-1\n", model)
 	return updated
 }
 
