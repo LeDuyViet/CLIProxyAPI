@@ -265,10 +265,14 @@ func ThinkingBudgetToGemini3Level(model string, budget int) (string, bool) {
 // We should not override these API defaults; let users explicitly configure if needed.
 var modelsWithDefaultThinking = map[string]bool{
 	"gemini-3-pro-preview":              true,
+	"gemini-3-pro-high":                 true,
 	"gemini-3-pro-image-preview":        true,
 	"gemini-3-flash-preview":            true,
+	"gemini-3-flash":                    true,
 	"gemini-claude-opus-4-5-thinking":   true,
 	"gemini-claude-sonnet-4-5-thinking": true,
+	"claude-opus-4-5-thinking":          true,
+	"claude-sonnet-4-5-thinking":        true,
 }
 
 // ModelHasDefaultThinking returns true if the model should have thinking enabled by default.
@@ -296,7 +300,7 @@ func ApplyDefaultThinkingIfNeeded(model string, body []byte) []byte {
 	}
 	// Gemini 2.5 and other models use thinkingBudget
 	updated, _ := sjson.SetBytes(body, "generationConfig.thinkingConfig.thinkingBudget", -1)
-	updated, _ = sjson.SetBytes(updated, "generationConfig.thinkingConfig.include_thoughts", true)
+	updated, _ = sjson.SetBytes(updated, "generationConfig.thinkingConfig.includeThoughts", true)
 	return updated
 }
 
@@ -396,7 +400,7 @@ func ApplyDefaultThinkingIfNeededCLI(model string, metadata map[string]any, body
 	}
 	// Gemini 2.5 and other models use thinkingBudget
 	updated, _ := sjson.SetBytes(body, "request.generationConfig.thinkingConfig.thinkingBudget", -1)
-	updated, _ = sjson.SetBytes(updated, "request.generationConfig.thinkingConfig.include_thoughts", true)
+	updated, _ = sjson.SetBytes(updated, "request.generationConfig.thinkingConfig.includeThoughts", true)
 	fmt.Printf("[APPLY-DEFAULT-THINKING] model=%s set thinkingBudget=-1\n", model)
 	return updated
 }
@@ -502,7 +506,7 @@ func ApplyReasoningEffortToGemini(body []byte, effort string) []byte {
 	}
 
 	budgetPath := "generationConfig.thinkingConfig.thinkingBudget"
-	includePath := "generationConfig.thinkingConfig.include_thoughts"
+	includePath := "generationConfig.thinkingConfig.includeThoughts"
 
 	if normalized == "none" {
 		body, _ = sjson.DeleteBytes(body, "generationConfig.thinkingConfig")
@@ -529,7 +533,7 @@ func ApplyReasoningEffortToGeminiCLI(body []byte, effort string) []byte {
 	}
 
 	budgetPath := "request.generationConfig.thinkingConfig.thinkingBudget"
-	includePath := "request.generationConfig.thinkingConfig.include_thoughts"
+	includePath := "request.generationConfig.thinkingConfig.includeThoughts"
 
 	if normalized == "none" {
 		body, _ = sjson.DeleteBytes(body, "request.generationConfig.thinkingConfig")

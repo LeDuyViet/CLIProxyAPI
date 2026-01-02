@@ -620,10 +620,13 @@ func (e *AntigravityExecutor) ExecuteStream(ctx context.Context, auth *cliproxya
 	// Debug logging for thinking state in Antigravity
 	thinkingBudget := gjson.GetBytes(translated, "request.generationConfig.thinkingConfig.thinkingBudget")
 	thinkingLevel := gjson.GetBytes(translated, "request.generationConfig.thinkingConfig.thinkingLevel")
+	includeThoughts := gjson.GetBytes(translated, "request.generationConfig.thinkingConfig.includeThoughts")
 	if thinkingBudget.Exists() {
 		fmt.Printf("[ANTIGRAVITY-STREAM] THINKING: ENABLED (budget=%d) for model=%s\n", thinkingBudget.Int(), req.Model)
 	} else if thinkingLevel.Exists() {
 		fmt.Printf("[ANTIGRAVITY-STREAM] THINKING: ENABLED (level=%s) for model=%s\n", thinkingLevel.String(), req.Model)
+	} else if includeThoughts.Bool() {
+		fmt.Printf("[ANTIGRAVITY-STREAM] THINKING: ENABLED (includeThoughts=true) for model=%s\n", req.Model)
 	} else {
 		fmt.Printf("[ANTIGRAVITY-STREAM] THINKING: NOT ENABLED for model=%s\n", req.Model)
 	}
@@ -992,24 +995,28 @@ func FetchAntigravityModels(ctx context.Context, auth *cliproxyauth.Auth, cfg *c
 		models := make([]*registry.ModelInfo, 0, len(result.Map()))
 		for originalName := range result.Map() {
 			aliasName := modelName2Alias(originalName)
-			if aliasName != "" {
-				cfg := modelConfig[aliasName]
-				modelName := aliasName
+
+			// Helper to register a model name with its config
+			registerModel := func(name string, displayName string) {
+				if name == "" {
+					return
+				}
+				cfg := modelConfig[name]
+				modelName := name
 				if cfg != nil && cfg.Name != "" {
 					modelName = cfg.Name
 				}
 				modelInfo := &registry.ModelInfo{
-					ID:          aliasName,
+					ID:          name,
 					Name:        modelName,
-					Description: aliasName,
-					DisplayName: aliasName,
-					Version:     aliasName,
+					Description: name,
+					DisplayName: displayName,
+					Version:     name,
 					Object:      "model",
 					Created:     now,
 					OwnedBy:     antigravityAuthType,
 					Type:        antigravityAuthType,
 				}
-				// Look up Thinking support from static config using alias name
 				if cfg != nil {
 					if cfg.Thinking != nil {
 						modelInfo.Thinking = cfg.Thinking
@@ -1019,6 +1026,16 @@ func FetchAntigravityModels(ctx context.Context, auth *cliproxyauth.Auth, cfg *c
 					}
 				}
 				models = append(models, modelInfo)
+			}
+
+			if aliasName != "" {
+				// Register the name used by the user (if it matches the original or is a known alias)
+				registerModel(originalName, originalName)
+
+				// If the alias is different from the original, register it too
+				if aliasName != originalName {
+					registerModel(aliasName, aliasName)
+				}
 			}
 		}
 		return models
@@ -1371,19 +1388,19 @@ func geminiToAntigravity(modelName string, payload []byte, projectID string) []b
 		}
 	}
 
-	if strings.Contains(modelName, "claude") {
-		gjson.Get(template, "request.tools").ForEach(func(key, tool gjson.Result) bool {
-			tool.Get("functionDeclarations").ForEach(func(funKey, funcDecl gjson.Result) bool {
-				if funcDecl.Get("parametersJsonSchema").Exists() {
-					template, _ = sjson.SetRaw(template, fmt.Sprintf("request.tools.%d.functionDeclarations.%d.parameters", key.Int(), funKey.Int()), funcDecl.Get("parametersJsonSchema").Raw)
-					template, _ = sjson.Delete(template, fmt.Sprintf("request.tools.%d.functionDeclarations.%d.parameters.$schema", key.Int(), funKey.Int()))
-					template, _ = sjson.Delete(template, fmt.Sprintf("request.tools.%d.functionDeclarations.%d.parametersJsonSchema", key.Int(), funKey.Int()))
-				}
-				return true
-			})
+	gjson.Get(template, "request.tools").ForEach(func(key, tool gjson.Result) bool {
+		tool.Get("functionDeclarations").ForEach(func(funKey, funcDecl gjson.Result) bool {
+			if funcDecl.Get("parametersJsonSchema").Exists() {
+				template, _ = sjson.SetRaw(template, fmt.Sprintf("request.tools.%d.functionDeclarations.%d.parameters", key.Int(), funKey.Int()), funcDecl.Get("parametersJsonSchema").Raw)
+				template, _ = sjson.Delete(template, fmt.Sprintf("request.tools.%d.functionDeclarations.%d.parameters.$schema", key.Int(), funKey.Int()))
+				template, _ = sjson.Delete(template, fmt.Sprintf("request.tools.%d.functionDeclarations.%d.parametersJsonSchema", key.Int(), funKey.Int()))
+			}
 			return true
 		})
-	} else {
+		return true
+	})
+
+	if !strings.Contains(modelName, "claude") {
 		template, _ = sjson.Delete(template, "request.generationConfig.maxOutputTokens")
 	}
 

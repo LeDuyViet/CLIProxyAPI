@@ -79,11 +79,11 @@ func ConvertOpenAIRequestToGemini(modelName string, inputRawJSON []byte, _ bool)
 			}
 
 			if v := tc.Get("includeThoughts"); v.Exists() {
-				out, _ = sjson.SetBytes(out, "generationConfig.thinkingConfig.include_thoughts", v.Bool())
+				out, _ = sjson.SetBytes(out, "generationConfig.thinkingConfig.includeThoughts", v.Bool())
 			} else if v := tc.Get("include_thoughts"); v.Exists() {
-				out, _ = sjson.SetBytes(out, "generationConfig.thinkingConfig.include_thoughts", v.Bool())
+				out, _ = sjson.SetBytes(out, "generationConfig.thinkingConfig.includeThoughts", v.Bool())
 			} else if setBudget && budget != 0 {
-				out, _ = sjson.SetBytes(out, "generationConfig.thinkingConfig.include_thoughts", true)
+				out, _ = sjson.SetBytes(out, "generationConfig.thinkingConfig.includeThoughts", true)
 			}
 		}
 	}
@@ -171,19 +171,24 @@ func ConvertOpenAIRequestToGemini(modelName string, inputRawJSON []byte, _ bool)
 			content := m.Get("content")
 
 			if (role == "system" || role == "developer") && len(arr) > 1 {
-				// system -> system_instruction as a user message style
+				// system -> system_instruction parts
+				p := 0
+				parts := gjson.GetBytes(out, "system_instruction.parts")
+				if parts.IsArray() {
+					p = len(parts.Array())
+				}
 				if content.Type == gjson.String {
 					out, _ = sjson.SetBytes(out, "system_instruction.role", "user")
-					out, _ = sjson.SetBytes(out, "system_instruction.parts.0.text", content.String())
+					out, _ = sjson.SetBytes(out, "system_instruction.parts."+itoa(p)+".text", content.String())
 				} else if content.IsObject() && content.Get("type").String() == "text" {
 					out, _ = sjson.SetBytes(out, "system_instruction.role", "user")
-					out, _ = sjson.SetBytes(out, "system_instruction.parts.0.text", content.Get("text").String())
+					out, _ = sjson.SetBytes(out, "system_instruction.parts."+itoa(p)+".text", content.Get("text").String())
 				} else if content.IsArray() {
 					contents := content.Array()
 					if len(contents) > 0 {
-						out, _ = sjson.SetBytes(out, "request.systemInstruction.role", "user")
+						out, _ = sjson.SetBytes(out, "system_instruction.role", "user")
 						for j := 0; j < len(contents); j++ {
-							out, _ = sjson.SetBytes(out, fmt.Sprintf("request.systemInstruction.parts.%d.text", j), contents[j].Get("text").String())
+							out, _ = sjson.SetBytes(out, fmt.Sprintf("system_instruction.parts.%d.text", p+j), contents[j].Get("text").String())
 						}
 					}
 				}

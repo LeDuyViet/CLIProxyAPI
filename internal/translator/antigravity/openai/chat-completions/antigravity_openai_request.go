@@ -76,11 +76,11 @@ func ConvertOpenAIRequestToAntigravity(modelName string, inputRawJSON []byte, _ 
 			}
 
 			if v := tc.Get("includeThoughts"); v.Exists() {
-				out, _ = sjson.SetBytes(out, "request.generationConfig.thinkingConfig.include_thoughts", v.Bool())
+				out, _ = sjson.SetBytes(out, "request.generationConfig.thinkingConfig.includeThoughts", v.Bool())
 			} else if v := tc.Get("include_thoughts"); v.Exists() {
-				out, _ = sjson.SetBytes(out, "request.generationConfig.thinkingConfig.include_thoughts", v.Bool())
+				out, _ = sjson.SetBytes(out, "request.generationConfig.thinkingConfig.includeThoughts", v.Bool())
 			} else if setBudget && budget != 0 {
-				out, _ = sjson.SetBytes(out, "request.generationConfig.thinkingConfig.include_thoughts", true)
+				out, _ = sjson.SetBytes(out, "request.generationConfig.thinkingConfig.includeThoughts", true)
 			}
 		}
 	}
@@ -93,7 +93,7 @@ func ConvertOpenAIRequestToAntigravity(modelName string, inputRawJSON []byte, _ 
 				if b := t.Get("budget_tokens"); b.Exists() && b.Type == gjson.Number {
 					budget := int(b.Int())
 					out, _ = sjson.SetBytes(out, "request.generationConfig.thinkingConfig.thinkingBudget", budget)
-					out, _ = sjson.SetBytes(out, "request.generationConfig.thinkingConfig.include_thoughts", true)
+					out, _ = sjson.SetBytes(out, "request.generationConfig.thinkingConfig.includeThoughts", true)
 				}
 			}
 		}
@@ -198,29 +198,37 @@ func ConvertOpenAIRequestToAntigravity(modelName string, inputRawJSON []byte, _ 
 			content := m.Get("content")
 
 			if (role == "system" || role == "developer") && len(arr) > 1 {
-				// system -> request.systemInstruction as a user message style
-				if content.Type == gjson.String {
-					out, _ = sjson.SetBytes(out, "request.systemInstruction.role", "user")
-					out, _ = sjson.SetBytes(out, "request.systemInstruction.parts.0.text", content.String())
+				// system -> request.systemInstruction parts
+				if content.Type == gjson.String && content.String() != "" {
+					p := 0
+					parts := gjson.GetBytes(out, "request.systemInstruction.parts")
+					if parts.IsArray() {
+						p = len(parts.Array())
+					}
+					out, _ = sjson.SetBytes(out, "request.systemInstruction.role", "system")
+					out, _ = sjson.SetBytes(out, "request.systemInstruction.parts."+itoa(p)+".text", content.String())
 				} else if content.IsObject() && content.Get("type").String() == "text" {
-					out, _ = sjson.SetBytes(out, "request.systemInstruction.role", "user")
-					out, _ = sjson.SetBytes(out, "request.systemInstruction.parts.0.text", content.Get("text").String())
+					p := 0
+					parts := gjson.GetBytes(out, "request.systemInstruction.parts")
+					if parts.IsArray() {
+						p = len(parts.Array())
+					}
+					out, _ = sjson.SetBytes(out, "request.systemInstruction.role", "system")
+					out, _ = sjson.SetBytes(out, "request.systemInstruction.parts."+itoa(p)+".text", content.Get("text").String())
 				} else if content.IsArray() {
 					// Handle array content (Cursor sends tool docs as array of text parts)
-					out, _ = sjson.SetBytes(out, "request.systemInstruction.role", "user")
-					var combinedText strings.Builder
+					out, _ = sjson.SetBytes(out, "request.systemInstruction.role", "system")
 					content.ForEach(func(_, part gjson.Result) bool {
 						if part.Get("type").String() == "text" {
-							if combinedText.Len() > 0 {
-								combinedText.WriteString("\n\n")
+							p := 0
+							parts := gjson.GetBytes(out, "request.systemInstruction.parts")
+							if parts.IsArray() {
+								p = len(parts.Array())
 							}
-							combinedText.WriteString(part.Get("text").String())
+							out, _ = sjson.SetBytes(out, "request.systemInstruction.parts."+itoa(p)+".text", part.Get("text").String())
 						}
 						return true
 					})
-					if combinedText.Len() > 0 {
-						out, _ = sjson.SetBytes(out, "request.systemInstruction.parts.0.text", combinedText.String())
-					}
 				}
 			} else if role == "user" || ((role == "system" || role == "developer") && len(arr) == 1) {
 				// Build single user content node to avoid splitting into multiple contents
