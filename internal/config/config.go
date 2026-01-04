@@ -102,6 +102,9 @@ type Config struct {
 	// Payload defines default and override rules for provider payload parameters.
 	Payload PayloadConfig `yaml:"payload" json:"payload"`
 
+	// ThinkingCache configures the RAM + SQLite cache for Claude thinking blocks.
+	ThinkingCache ThinkingCacheConfig `yaml:"thinking-cache" json:"thinking-cache"`
+
 	legacyMigrationPending bool `yaml:"-" json:"-"`
 }
 
@@ -234,6 +237,17 @@ type PayloadModelRule struct {
 	Name string `yaml:"name" json:"name"`
 	// Protocol restricts the rule to a specific translator format (e.g., "gemini", "responses").
 	Protocol string `yaml:"protocol" json:"protocol"`
+}
+
+// ThinkingCacheConfig holds configuration for the Claude thinking block cache.
+// This cache enables tool loops with extended thinking by persisting thinking blocks.
+type ThinkingCacheConfig struct {
+	// Enabled toggles the thinking block cache on or off.
+	Enabled bool `yaml:"enabled" json:"enabled"`
+	// MaxMemoryMB is the maximum RAM allocated for the cache (default 512MB).
+	MaxMemoryMB int `yaml:"max-memory-mb" json:"max-memory-mb"`
+	// SQLitePath is the path to the SQLite file for persistence.
+	SQLitePath string `yaml:"sqlite-path" json:"sqlite-path"`
 }
 
 // ClaudeKey represents the configuration for a Claude API key,
