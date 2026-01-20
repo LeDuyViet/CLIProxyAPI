@@ -261,13 +261,47 @@ func (e *AntigravityExecutor) executeClaudeNonStream(ctx context.Context, auth *
 	var lastErr error
 
 	for idx, baseURL := range baseURLs {
-		httpReq, errReq := e.buildRequest(ctx, auth, token, req.Model, translated, true, opts.Alt, baseURL)
-		if errReq != nil {
-			err = errReq
-			return resp, err
+		var httpResp *http.Response
+		var bodyBytes []byte
+		var errDo error
+		var errRead error
+
+		// Retry loop for 429
+		for attempt := 0; attempt <= 3; attempt++ {
+			var httpReq *http.Request
+			var errReq error
+			httpReq, errReq = e.buildRequest(ctx, auth, token, req.Model, translated, true, opts.Alt, baseURL)
+			if errReq != nil {
+				err = errReq
+				return resp, err
+			}
+
+			httpResp, errDo = httpClient.Do(httpReq)
+			if errDo != nil {
+				break
+			}
+
+			if httpResp.StatusCode == http.StatusTooManyRequests {
+				bodyBytes, errRead = io.ReadAll(httpResp.Body)
+				_ = httpResp.Body.Close()
+
+				if errRead == nil {
+					retryAfter, _ := parseRetryDelay(bodyBytes)
+					if retryAfter != nil && attempt < 3 {
+						log.Infof("antigravity executor: rate limited on base url %s, waiting %v before retry (attempt %d/3)...", baseURL, *retryAfter, attempt+1)
+						select {
+						case <-ctx.Done():
+							return resp, ctx.Err()
+						case <-time.After(*retryAfter):
+							continue
+						}
+					}
+				}
+				break
+			}
+			break
 		}
 
-		httpResp, errDo := httpClient.Do(httpReq)
 		if errDo != nil {
 			recordAPIResponseError(ctx, e.cfg, errDo)
 			if errors.Is(errDo, context.Canceled) || errors.Is(errDo, context.DeadlineExceeded) {
@@ -285,9 +319,11 @@ func (e *AntigravityExecutor) executeClaudeNonStream(ctx context.Context, auth *
 		}
 		recordAPIResponseMetadata(ctx, e.cfg, httpResp.StatusCode, httpResp.Header.Clone())
 		if httpResp.StatusCode < http.StatusOK || httpResp.StatusCode >= http.StatusMultipleChoices {
-			bodyBytes, errRead := io.ReadAll(httpResp.Body)
-			if errClose := httpResp.Body.Close(); errClose != nil {
-				log.Errorf("antigravity executor: close response body error: %v", errClose)
+			if bodyBytes == nil {
+				bodyBytes, errRead = io.ReadAll(httpResp.Body)
+				if errClose := httpResp.Body.Close(); errClose != nil {
+					log.Errorf("antigravity executor: close response body error: %v", errClose)
+				}
 			}
 			if errRead != nil {
 				recordAPIResponseError(ctx, e.cfg, errRead)
@@ -625,13 +661,47 @@ func (e *AntigravityExecutor) ExecuteStream(ctx context.Context, auth *cliproxya
 	var lastErr error
 
 	for idx, baseURL := range baseURLs {
-		httpReq, errReq := e.buildRequest(ctx, auth, token, req.Model, translated, true, opts.Alt, baseURL)
-		if errReq != nil {
-			err = errReq
-			return nil, err
+		var httpResp *http.Response
+		var bodyBytes []byte
+		var errDo error
+		var errRead error
+
+		// Retry loop for 429
+		for attempt := 0; attempt <= 3; attempt++ {
+			var httpReq *http.Request
+			var errReq error
+			httpReq, errReq = e.buildRequest(ctx, auth, token, req.Model, translated, true, opts.Alt, baseURL)
+			if errReq != nil {
+				err = errReq
+				return nil, err
+			}
+
+			httpResp, errDo = httpClient.Do(httpReq)
+			if errDo != nil {
+				break
+			}
+
+			if httpResp.StatusCode == http.StatusTooManyRequests {
+				bodyBytes, errRead = io.ReadAll(httpResp.Body)
+				_ = httpResp.Body.Close()
+
+				if errRead == nil {
+					retryAfter, _ := parseRetryDelay(bodyBytes)
+					if retryAfter != nil && attempt < 3 {
+						log.Infof("antigravity executor: rate limited on base url %s, waiting %v before retry (attempt %d/3)...", baseURL, *retryAfter, attempt+1)
+						select {
+						case <-ctx.Done():
+							return nil, ctx.Err()
+						case <-time.After(*retryAfter):
+							continue
+						}
+					}
+				}
+				break
+			}
+			break
 		}
 
-		httpResp, errDo := httpClient.Do(httpReq)
 		if errDo != nil {
 			recordAPIResponseError(ctx, e.cfg, errDo)
 			if errors.Is(errDo, context.Canceled) || errors.Is(errDo, context.DeadlineExceeded) {
@@ -649,9 +719,11 @@ func (e *AntigravityExecutor) ExecuteStream(ctx context.Context, auth *cliproxya
 		}
 		recordAPIResponseMetadata(ctx, e.cfg, httpResp.StatusCode, httpResp.Header.Clone())
 		if httpResp.StatusCode < http.StatusOK || httpResp.StatusCode >= http.StatusMultipleChoices {
-			bodyBytes, errRead := io.ReadAll(httpResp.Body)
-			if errClose := httpResp.Body.Close(); errClose != nil {
-				log.Errorf("antigravity executor: close response body error: %v", errClose)
+			if bodyBytes == nil {
+				bodyBytes, errRead = io.ReadAll(httpResp.Body)
+				if errClose := httpResp.Body.Close(); errClose != nil {
+					log.Errorf("antigravity executor: close response body error: %v", errClose)
+				}
 			}
 			if errRead != nil {
 				recordAPIResponseError(ctx, e.cfg, errRead)
@@ -1147,6 +1219,8 @@ func (e *AntigravityExecutor) buildRequest(ctx context.Context, auth *cliproxyau
 	}
 	payload = geminiToAntigravity(modelName, payload, projectID)
 	payload, _ = sjson.SetBytes(payload, "model", alias2ModelName(modelName))
+
+	log.Infof("AntigravityExecutor final payload for model=%s: %s", modelName, string(payload))
 
 	if strings.Contains(modelName, "claude") {
 		strJSON := string(payload)

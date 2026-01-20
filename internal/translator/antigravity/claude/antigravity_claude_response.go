@@ -17,6 +17,7 @@ import (
 	"github.com/router-for-me/CLIProxyAPI/v6/internal/cache"
 	log "github.com/sirupsen/logrus"
 
+	. "github.com/router-for-me/CLIProxyAPI/v6/internal/translator/gemini/openai/chat-completions"
 	"github.com/tidwall/gjson"
 	"github.com/tidwall/sjson"
 )
@@ -481,6 +482,8 @@ func ConvertAntigravityResponseToClaudeNonStream(_ context.Context, _ string, or
 
 				if args := functionCall.Get("args"); args.Exists() && args.Raw != "" && gjson.Valid(args.Raw) && args.IsObject() {
 					toolBlock, _ = sjson.SetRaw(toolBlock, "input", args.Raw)
+				} else {
+					LogMalformedArgs("Antigravity/Claude", name, args.Raw)
 				}
 
 				ensureContentArray()

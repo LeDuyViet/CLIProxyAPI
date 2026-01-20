@@ -28,6 +28,9 @@ const geminiCLIFunctionThoughtSignature = "skip_thought_signature_validator"
 // Returns:
 //   - []byte: The transformed request data in Gemini CLI API format
 func ConvertOpenAIRequestToAntigravity(modelName string, inputRawJSON []byte, _ bool) []byte {
+	log.Infof("ConvertOpenAIRequestToAntigravity input: model=%s, jsonLen=%d", modelName, len(inputRawJSON))
+	// log.Debugf("ConvertOpenAIRequestToAntigravity input JSON: %s", string(inputRawJSON))
+
 	rawJSON := bytes.Clone(inputRawJSON)
 	// Base envelope (no default thinkingConfig)
 	out := []byte(`{"project":"","request":{"contents":[]},"model":"gemini-2.5-pro"}`)
@@ -406,7 +409,9 @@ func ConvertOpenAIRequestToAntigravity(modelName string, inputRawJSON []byte, _ 
 		}
 	}
 
-	return common.AttachDefaultSafetySettings(out, "request.safetySettings")
+	res := common.AttachDefaultSafetySettings(out, "request.safetySettings")
+	log.Infof("ConvertOpenAIRequestToAntigravity output: %s", res)
+	return res
 }
 
 // itoa converts int to string without strconv import for few usages.

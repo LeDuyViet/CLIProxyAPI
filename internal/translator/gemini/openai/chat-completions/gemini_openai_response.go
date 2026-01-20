@@ -9,6 +9,8 @@ import (
 	"bytes"
 	"context"
 	"fmt"
+	"os"
+	"path/filepath"
 	"strings"
 	"sync/atomic"
 	"time"
@@ -26,6 +28,33 @@ type convertGeminiResponseToOpenAIChatParams struct {
 
 // functionCallIDCounter provides a process-wide unique counter for function call identifiers.
 var functionCallIDCounter uint64
+
+// LogMalformedArgs logs invalid tool call arguments to a file and standard logger.
+func LogMalformedArgs(source string, toolName string, args string) {
+	// Standard log
+	log.Warnf("%s: Invalid tool call arguments. Name: %s, Args: %s", source, toolName, args)
+
+	// Log to file
+	logDir := "logs"
+	if _, err := os.Stat(logDir); os.IsNotExist(err) {
+		_ = os.Mkdir(logDir, 0755)
+	}
+
+	timestamp := time.Now().Format("2006-01-02")
+	filename := filepath.Join(logDir, fmt.Sprintf("malformed_calls_%s.log", timestamp))
+
+	f, err := os.OpenFile(filename, os.O_APPEND|os.O_CREATE|os.O_WRONLY, 0644)
+	if err != nil {
+		log.Errorf("Failed to open malformed calls log file: %v", err)
+		return
+	}
+	defer f.Close()
+
+	entry := fmt.Sprintf("[%s] %s | Tool: %s | Args: %s\n", time.Now().Format(time.RFC3339), source, toolName, args)
+	if _, err := f.WriteString(entry); err != nil {
+		log.Errorf("Failed to write to malformed calls log file: %v", err)
+	}
+}
 
 // ConvertGeminiResponseToOpenAI translates a single chunk of a streaming response from the
 // Gemini API format to the OpenAI Chat Completions streaming format.
@@ -164,8 +193,12 @@ func ConvertGeminiResponseToOpenAI(_ context.Context, _ string, originalRequestR
 				functionCallTemplate, _ = sjson.Set(functionCallTemplate, "id", fmt.Sprintf("%s-%d-%d", fcName, time.Now().UnixNano(), atomic.AddUint64(&functionCallIDCounter, 1)))
 				functionCallTemplate, _ = sjson.Set(functionCallTemplate, "index", functionCallIndex)
 				functionCallTemplate, _ = sjson.Set(functionCallTemplate, "function.name", fcName)
-				if fcArgsResult := functionCallResult.Get("args"); fcArgsResult.Exists() {
-					functionCallTemplate, _ = sjson.Set(functionCallTemplate, "function.arguments", fcArgsResult.Raw)
+				args := functionCallResult.Get("args")
+				if args.Exists() && args.Raw != "" && gjson.Valid(args.Raw) && args.IsObject() {
+					functionCallTemplate, _ = sjson.Set(functionCallTemplate, "function.arguments", args.Raw)
+				} else {
+					LogMalformedArgs("Gemini Streaming", fcName, args.Raw)
+					functionCallTemplate, _ = sjson.Set(functionCallTemplate, "function.arguments", "{}")
 				}
 				template, _ = sjson.Set(template, "choices.0.delta.role", "assistant")
 				template, _ = sjson.SetRaw(template, "choices.0.delta.tool_calls.-1", functionCallTemplate)
@@ -300,8 +333,12 @@ func ConvertGeminiResponseToOpenAINonStream(_ context.Context, _ string, origina
 				fcName := functionCallResult.Get("name").String()
 				functionCallItemTemplate, _ = sjson.Set(functionCallItemTemplate, "id", fmt.Sprintf("%s-%d-%d", fcName, time.Now().UnixNano(), atomic.AddUint64(&functionCallIDCounter, 1)))
 				functionCallItemTemplate, _ = sjson.Set(functionCallItemTemplate, "function.name", fcName)
-				if fcArgsResult := functionCallResult.Get("args"); fcArgsResult.Exists() {
-					functionCallItemTemplate, _ = sjson.Set(functionCallItemTemplate, "function.arguments", fcArgsResult.Raw)
+				args := functionCallResult.Get("args")
+				if args.Exists() && args.Raw != "" && gjson.Valid(args.Raw) && args.IsObject() {
+					functionCallItemTemplate, _ = sjson.Set(functionCallItemTemplate, "function.arguments", args.Raw)
+				} else {
+					LogMalformedArgs("Gemini Non-Streaming", fcName, args.Raw)
+					functionCallItemTemplate, _ = sjson.Set(functionCallItemTemplate, "function.arguments", "{}")
 				}
 				template, _ = sjson.Set(template, "choices.0.message.role", "assistant")
 				template, _ = sjson.SetRaw(template, "choices.0.message.tool_calls.-1", functionCallItemTemplate)

@@ -162,11 +162,15 @@ func ConvertAntigravityResponseToOpenAI(_ context.Context, _ string, originalReq
 				fcName := functionCallResult.Get("name").String()
 				functionCallTemplate, _ = sjson.Set(functionCallTemplate, "id", fmt.Sprintf("%s-%d-%d", fcName, time.Now().UnixNano(), atomic.AddUint64(&functionCallIDCounter, 1)))
 				functionCallTemplate, _ = sjson.Set(functionCallTemplate, "index", functionCallIndex)
-				functionCallTemplate, _ = sjson.Set(functionCallTemplate, "function.name", fcName)
-				if fcArgsResult := functionCallResult.Get("args"); fcArgsResult.Exists() {
-					functionCallTemplate, _ = sjson.Set(functionCallTemplate, "function.arguments", fcArgsResult.Raw)
+			functionCallTemplate, _ = sjson.Set(functionCallTemplate, "function.name", fcName)
+			args := functionCallResult.Get("args")
+			if args.Exists() && args.Raw != "" && gjson.Valid(args.Raw) && args.IsObject() {
+				functionCallTemplate, _ = sjson.Set(functionCallTemplate, "function.arguments", args.Raw)
+			} else {
+					LogMalformedArgs("Antigravity Streaming", fcName, args.Raw)
+					functionCallTemplate, _ = sjson.Set(functionCallTemplate, "function.arguments", "{}")
 				}
-				template, _ = sjson.Set(template, "choices.0.delta.role", "assistant")
+			template, _ = sjson.Set(template, "choices.0.delta.role", "assistant")
 				template, _ = sjson.SetRaw(template, "choices.0.delta.tool_calls.-1", functionCallTemplate)
 			} else if inlineDataResult.Exists() {
 				data := inlineDataResult.Get("data").String()
