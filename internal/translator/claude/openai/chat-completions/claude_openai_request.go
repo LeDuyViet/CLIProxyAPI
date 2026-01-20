@@ -19,7 +19,7 @@ import (
 
 	"github.com/google/uuid"
 	"github.com/router-for-me/CLIProxyAPI/v6/internal/cache"
-	"github.com/router-for-me/CLIProxyAPI/v6/internal/util"
+	"github.com/router-for-me/CLIProxyAPI/v6/internal/thinking"
 	"github.com/tidwall/gjson"
 	"github.com/tidwall/sjson"
 )
@@ -96,7 +96,7 @@ func ensureAssistantThinkingBlock(requestJSON string) string {
 	// (Claude sẽ báo lỗi nếu thinking enabled mà không có thinking content)
 	result, _ := sjson.Delete(requestJSON, "thinking")
 
-	log.Warnf("⚠ Disabled thinking for request (assistant message has no thinking block)")
+	// log.Warnf("⚠ Disabled thinking for request (assistant message has no thinking block)")
 
 	return result
 }
@@ -115,8 +115,8 @@ func extractThinkingFromContent(text string) []interface{} {
 		// Nếu tìm thấy cache với valid signature → restore thinking block
 		if entry != nil && cache.HasValidSignature(entry.Signature) {
 			// Found valid cache → restore thinking
-			log.Infof("✓ Restored cached thinking (thinkingID=%s, textLen=%d, sigLen=%d)",
-				thinkingID, len(entry.ThinkingText), len(entry.Signature))
+			// log.Infof("✓ Restored cached thinking (thinkingID=%s, textLen=%d, sigLen=%d)",
+			// 	thinkingID, len(entry.ThinkingText), len(entry.Signature))
 
 			// Remove <think> tag và thinkId marker từ text
 			remainingText := thinkTagRegex.ReplaceAllString(text, "")
@@ -147,13 +147,13 @@ func extractThinkingFromContent(text string) []interface{} {
 
 		// Cache miss hoặc invalid signature - fallback: parse thinking từ <think> tag
 		// Claude API sẽ regenerate signature mới
-		if entry != nil {
-			log.Warnf("✗ Thinking cache found but invalid signature (thinkingID=%s, sigLen=%d) - will regenerate signature",
-				thinkingID, len(entry.Signature))
-		} else {
-			log.Warnf("✗ Thinking cache miss (thinkingID=%s) - will regenerate signature",
-				thinkingID)
-		}
+		// if entry != nil {
+		// 	log.Warnf("✗ Thinking cache found but invalid signature (thinkingID=%s, sigLen=%d) - will regenerate signature",
+		// 		thinkingID, len(entry.Signature))
+		// } else {
+		// 	log.Warnf("✗ Thinking cache miss (thinkingID=%s) - will regenerate signature",
+		// 		thinkingID)
+		// }
 
 		// Fallback: extract thinking từ <think> tag
 		thinkMatch := thinkTagRegex.FindStringSubmatch(text)
@@ -188,7 +188,7 @@ func extractThinkingFromContent(text string) []interface{} {
 				parts = append(parts, textPart)
 			}
 
-			log.Infof("→ Fallback: extracted thinking from <think> tag (textLen=%d) - signature will be regenerated", len(thinkingText))
+			// log.Infof("→ Fallback: extracted thinking from <think> tag (textLen=%d) - signature will be regenerated", len(thinkingText))
 			return parts
 		}
 	}
@@ -288,10 +288,11 @@ func ConvertOpenAIRequestToClaude(modelName string, inputRawJSON []byte, stream 
 
 	root := gjson.ParseBytes(rawJSON)
 
-	if v := root.Get("reasoning_effort"); v.Exists() && util.ModelSupportsThinking(modelName) && !util.ModelUsesThinkingLevels(modelName) {
+	// Convert OpenAI reasoning_effort to Claude thinking config.
+	if v := root.Get("reasoning_effort"); v.Exists() {
 		effort := strings.ToLower(strings.TrimSpace(v.String()))
 		if effort != "" {
-			budget, ok := util.ThinkingEffortToBudget(modelName, effort)
+			budget, ok := thinking.ConvertLevelToBudget(effort)
 			if ok {
 				switch budget {
 				case 0:
@@ -372,17 +373,35 @@ func ConvertOpenAIRequestToClaude(modelName string, inputRawJSON []byte, stream 
 
 	// Process messages and transform them to Claude Code format
 	if messages := root.Get("messages"); messages.Exists() && messages.IsArray() {
+		messageIndex := 0
+		systemMessageIndex := -1
 		messages.ForEach(func(_, message gjson.Result) bool {
 			role := message.Get("role").String()
 			contentResult := message.Get("content")
 
 			switch role {
-			case "system", "user", "assistant":
-				// Create Claude Code message with appropriate role mapping
-				if role == "system" {
-					role = "user"
+			case "system":
+				if systemMessageIndex == -1 {
+					systemMsg := `{"role":"user","content":[]}`
+					out, _ = sjson.SetRaw(out, "messages.-1", systemMsg)
+					systemMessageIndex = messageIndex
+					messageIndex++
 				}
-
+				if contentResult.Exists() && contentResult.Type == gjson.String && contentResult.String() != "" {
+					textPart := `{"type":"text","text":""}`
+					textPart, _ = sjson.Set(textPart, "text", contentResult.String())
+					out, _ = sjson.SetRaw(out, fmt.Sprintf("messages.%d.content.-1", systemMessageIndex), textPart)
+				} else if contentResult.Exists() && contentResult.IsArray() {
+					contentResult.ForEach(func(_, part gjson.Result) bool {
+						if part.Get("type").String() == "text" {
+							textPart := `{"type":"text","text":""}`
+							textPart, _ = sjson.Set(textPart, "text", part.Get("text").String())
+							out, _ = sjson.SetRaw(out, fmt.Sprintf("messages.%d.content.-1", systemMessageIndex), textPart)
+						}
+						return true
+					})
+				}
+			case "user", "assistant":
 				msg := `{"role":"","content":[]}`
 				msg, _ = sjson.Set(msg, "role", role)
 
@@ -420,6 +439,18 @@ func ConvertOpenAIRequestToClaude(modelName string, inputRawJSON []byte, stream 
 									msg, _ = sjson.SetRaw(msg, "content.-1", imagePart)
 								}
 							}
+
+						case "image":
+							// Hỗ trợ nhận ảnh base64 trực tiếp theo format Claude native
+							// Request format: {"type":"image","source":{"type":"base64","media_type":"image/png","data":"..."}}
+							source := part.Get("source")
+							if source.Exists() && source.Get("type").String() == "base64" {
+								imagePart := `{"type":"image","source":{"type":"base64","media_type":"","data":""}}`
+								imagePart, _ = sjson.Set(imagePart, "source.media_type", source.Get("media_type").String())
+								imagePart, _ = sjson.Set(imagePart, "source.data", source.Get("data").String())
+								msg, _ = sjson.SetRaw(msg, "content.-1", imagePart)
+							}
+
 						case "tool_use":
 							// Handle tool use messages conversion
 							toolUse := `{"type":"tool_use","id":"","name":"","input":{}}`
@@ -478,6 +509,7 @@ func ConvertOpenAIRequestToClaude(modelName string, inputRawJSON []byte, stream 
 				}
 
 				out, _ = sjson.SetRaw(out, "messages.-1", msg)
+				messageIndex++
 
 			case "tool":
 				// Handle tool result messages conversion
@@ -488,6 +520,7 @@ func ConvertOpenAIRequestToClaude(modelName string, inputRawJSON []byte, stream 
 				msg, _ = sjson.Set(msg, "content.0.tool_use_id", toolCallID)
 				msg, _ = sjson.Set(msg, "content.0.content", content)
 				out, _ = sjson.SetRaw(out, "messages.-1", msg)
+				messageIndex++
 			}
 			return true
 		})
