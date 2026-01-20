@@ -10,7 +10,9 @@ import (
 	"context"
 	"encoding/json"
 	"fmt"
+	"log"
 	"net/http"
+	"os"
 	"sync"
 
 	"github.com/gin-gonic/gin"
@@ -118,6 +120,12 @@ func (h *OpenAIAPIHandler) ChatCompletions(c *gin.Context) {
 		modelName := gjson.GetBytes(rawJSON, "model").String()
 		rawJSON = responsesconverter.ConvertOpenAIResponsesRequestToOpenAIChatCompletions(modelName, rawJSON, stream)
 		stream = gjson.GetBytes(rawJSON, "stream").Bool()
+	}
+
+	// write rawJSON to file
+	err = os.WriteFile("rawJSON.json", rawJSON, 0644)
+	if err != nil {
+		log.Printf("write rawJSON to file error: %v", err)
 	}
 
 	if stream {
